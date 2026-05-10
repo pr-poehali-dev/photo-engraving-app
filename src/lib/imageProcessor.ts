@@ -1,14 +1,19 @@
 export type DitheringMode = "none" | "floyd" | "ordered" | "threshold" | "error";
+export type NeuroFilter = "none" | "engrave" | "lineart" | "stipple" | "crosshatch" | "blueprint";
 
 export interface ProcessOptions {
-  contrast: number;    // 0–100, 50 = neutral
-  brightness: number;  // 0–100, 50 = neutral
-  sharpness: number;   // 0–100
-  grayscale: number;   // 0–100 (%)
-  threshold: number;   // 0–255
-  gamma: number;       // 0.1–3.0
+  contrast: number;
+  brightness: number;
+  sharpness: number;
+  grayscale: number;
+  threshold: number;
+  gamma: number;
   bitDepth: 1 | 8;
   dithering: DitheringMode;
+  skinSmooth?: number;   // 0–100
+  autoRetouch?: boolean;
+  removeBg?: boolean;
+  neuroFilter?: NeuroFilter;
 }
 
 // Ordered Bayer 4×4 matrix
@@ -25,6 +30,240 @@ function clamp(v: number): number {
 
 function applyGamma(v: number, gamma: number): number {
   return Math.pow(v / 255, 1 / gamma) * 255;
+}
+
+// ── Gaussian blur (for skin smooth & bg removal) ──────────────────────────────
+function applyGaussianBlur(data: Uint8ClampedArray, w: number, h: number, radius: number): Uint8ClampedArray {
+  if (radius <= 0) return data;
+  const r = Math.round(radius);
+  const kernel: number[] = [];
+  const sigma = radius / 3;
+  let sum = 0;
+  for (let i = -r; i <= r; i++) {
+    const v = Math.exp(-(i * i) / (2 * sigma * sigma));
+    kernel.push(v);
+    sum += v;
+  }
+  const k = kernel.map(v => v / sum);
+  const tmp = new Uint8ClampedArray(data.length);
+  // horizontal pass
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      let rv = 0, gv = 0, bv = 0;
+      for (let i = -r; i <= r; i++) {
+        const nx = Math.min(w - 1, Math.max(0, x + i));
+        const ni = (y * w + nx) * 4;
+        rv += data[ni] * k[i + r];
+        gv += data[ni + 1] * k[i + r];
+        bv += data[ni + 2] * k[i + r];
+      }
+      const oi = (y * w + x) * 4;
+      tmp[oi] = clamp(rv); tmp[oi+1] = clamp(gv); tmp[oi+2] = clamp(bv); tmp[oi+3] = data[oi+3];
+    }
+  }
+  const out = new Uint8ClampedArray(data.length);
+  // vertical pass
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      let rv = 0, gv = 0, bv = 0;
+      for (let i = -r; i <= r; i++) {
+        const ny = Math.min(h - 1, Math.max(0, y + i));
+        const ni = (ny * w + x) * 4;
+        rv += tmp[ni] * k[i + r];
+        gv += tmp[ni + 1] * k[i + r];
+        bv += tmp[ni + 2] * k[i + r];
+      }
+      const oi = (y * w + x) * 4;
+      out[oi] = clamp(rv); out[oi+1] = clamp(gv); out[oi+2] = clamp(bv); out[oi+3] = data[oi+3];
+    }
+  }
+  return out;
+}
+
+// ── Skin smooth: blur only skin-toned pixels ─────────────────────────────────
+function isSkinPixel(r: number, g: number, b: number): boolean {
+  // RGB skin range heuristic
+  return r > 95 && g > 40 && b > 20
+    && Math.max(r, g, b) - Math.min(r, g, b) > 15
+    && r > g && r > b
+    && Math.abs(r - g) > 15;
+}
+
+export function applySkinSmooth(data: Uint8ClampedArray, w: number, h: number, amount: number): Uint8ClampedArray {
+  if (amount <= 0) return data;
+  const radius = Math.round(amount / 100 * 8);
+  const blurred = applyGaussianBlur(data, w, h, radius);
+  const out = new Uint8ClampedArray(data.length);
+  const strength = amount / 100;
+  for (let i = 0; i < w * h; i++) {
+    const ri = i * 4;
+    const r = data[ri], g = data[ri+1], b = data[ri+2];
+    if (isSkinPixel(r, g, b)) {
+      out[ri]   = Math.round(r * (1 - strength) + blurred[ri]   * strength);
+      out[ri+1] = Math.round(g * (1 - strength) + blurred[ri+1] * strength);
+      out[ri+2] = Math.round(b * (1 - strength) + blurred[ri+2] * strength);
+    } else {
+      out[ri] = r; out[ri+1] = g; out[ri+2] = b;
+    }
+    out[ri+3] = data[ri+3];
+  }
+  return out;
+}
+
+// ── Auto retouch: local contrast enhancement + mild denoise ──────────────────
+export function applyAutoRetouch(data: Uint8ClampedArray, w: number, h: number): Uint8ClampedArray {
+  // Step 1: mild Gaussian denoise
+  const denoised = applyGaussianBlur(data, w, h, 0.8);
+  // Step 2: unsharp mask (original - blurred*0.3 + boost)
+  const out = new Uint8ClampedArray(data.length);
+  for (let i = 0; i < w * h; i++) {
+    const ri = i * 4;
+    for (let c = 0; c < 3; c++) {
+      const orig = data[ri + c];
+      const blurred = denoised[ri + c];
+      // unsharp mask: v = orig + 0.4*(orig - blurred)
+      out[ri + c] = clamp(orig + 0.4 * (orig - blurred));
+    }
+    out[ri + 3] = data[ri + 3];
+    // Mild shadows lift
+    const lum = 0.299 * out[ri] + 0.587 * out[ri+1] + 0.114 * out[ri+2];
+    if (lum < 80) {
+      const lift = (80 - lum) / 80 * 30;
+      for (let c = 0; c < 3; c++) out[ri + c] = clamp(out[ri + c] + lift);
+    }
+  }
+  return out;
+}
+
+// ── Background removal: simple chroma-key / corner-flood approach ─────────────
+export function applyRemoveBg(data: Uint8ClampedArray, w: number, h: number): Uint8ClampedArray {
+  // Sample background color from 4 corners
+  const corners = [0, (w - 1), (h - 1) * w, (h - 1) * w + (w - 1)];
+  let bgR = 0, bgG = 0, bgB = 0;
+  for (const c of corners) {
+    bgR += data[c * 4]; bgG += data[c * 4 + 1]; bgB += data[c * 4 + 2];
+  }
+  bgR = Math.round(bgR / 4); bgG = Math.round(bgG / 4); bgB = Math.round(bgB / 4);
+
+  const tolerance = 40;
+  const visited = new Uint8Array(w * h);
+  const out = new Uint8ClampedArray(data);
+  const queue: number[] = [...corners];
+
+  // BFS flood fill from corners
+  while (queue.length > 0) {
+    const idx = queue.pop()!;
+    if (visited[idx]) continue;
+    visited[idx] = 1;
+    const ri = idx * 4;
+    const r = data[ri], g = data[ri+1], b = data[ri+2];
+    const dist = Math.abs(r - bgR) + Math.abs(g - bgG) + Math.abs(b - bgB);
+    if (dist > tolerance) continue;
+    // Mark as transparent
+    out[ri] = 255; out[ri+1] = 255; out[ri+2] = 255; out[ri+3] = 255;
+    const x = idx % w, y = Math.floor(idx / w);
+    if (x > 0) queue.push(idx - 1);
+    if (x < w - 1) queue.push(idx + 1);
+    if (y > 0) queue.push(idx - w);
+    if (y < h - 1) queue.push(idx + w);
+  }
+  return out;
+}
+
+// ── Neuro filters ─────────────────────────────────────────────────────────────
+export function applyNeuroFilter(
+  data: Uint8ClampedArray, w: number, h: number, filter: NeuroFilter
+): Uint8ClampedArray {
+  if (filter === "none") return data;
+
+  const out = new Uint8ClampedArray(data.length);
+
+  if (filter === "engrave") {
+    // High-contrast emboss + edge enhancement
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const i = y * w + x;
+        const ri = i * 4;
+        const lum = (data[ri] * 0.299 + data[ri+1] * 0.587 + data[ri+2] * 0.114);
+        // Emboss kernel
+        const tl = y > 0 && x > 0 ? (data[((y-1)*w+(x-1))*4] * 0.299 + data[((y-1)*w+(x-1))*4+1] * 0.587 + data[((y-1)*w+(x-1))*4+2] * 0.114) : lum;
+        const emboss = clamp(lum - tl + 128);
+        out[ri] = out[ri+1] = out[ri+2] = emboss;
+        out[ri+3] = 255;
+      }
+    }
+  } else if (filter === "lineart") {
+    // Sobel edge detection
+    for (let y = 1; y < h - 1; y++) {
+      for (let x = 1; x < w - 1; x++) {
+        const lum = (px: number, py: number) => {
+          const ii = (py * w + px) * 4;
+          return data[ii] * 0.299 + data[ii+1] * 0.587 + data[ii+2] * 0.114;
+        };
+        const gx = -lum(x-1,y-1) + lum(x+1,y-1) - 2*lum(x-1,y) + 2*lum(x+1,y) - lum(x-1,y+1) + lum(x+1,y+1);
+        const gy = -lum(x-1,y-1) - 2*lum(x,y-1) - lum(x+1,y-1) + lum(x-1,y+1) + 2*lum(x,y+1) + lum(x+1,y+1);
+        const mag = clamp(Math.sqrt(gx*gx + gy*gy));
+        const edge = 255 - mag; // invert: lines are dark on white
+        const ri = (y * w + x) * 4;
+        out[ri] = out[ri+1] = out[ri+2] = edge;
+        out[ri+3] = 255;
+      }
+    }
+    // Fill border
+    for (let x = 0; x < w; x++) { const ri = x*4; out[ri]=out[ri+1]=out[ri+2]=255; out[ri+3]=255; const ri2=((h-1)*w+x)*4; out[ri2]=out[ri2+1]=out[ri2+2]=255; out[ri2+3]=255; }
+    for (let y = 0; y < h; y++) { const ri = (y*w)*4; out[ri]=out[ri+1]=out[ri+2]=255; out[ri+3]=255; const ri2=(y*w+w-1)*4; out[ri2]=out[ri2+1]=out[ri2+2]=255; out[ri2+3]=255; }
+  } else if (filter === "stipple") {
+    // Halftone dots
+    const dotSize = 6;
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const ri = (y * w + x) * 4;
+        const cellX = x % dotSize, cellY = y % dotSize;
+        const cx = Math.floor(x / dotSize) * dotSize + dotSize / 2;
+        const cy = Math.floor(y / dotSize) * dotSize + dotSize / 2;
+        const srcI = (Math.min(h-1,cy) * w + Math.min(w-1,cx)) * 4;
+        const lum = data[srcI] * 0.299 + data[srcI+1] * 0.587 + data[srcI+2] * 0.114;
+        const radius = ((255 - lum) / 255) * (dotSize / 2);
+        const dist = Math.sqrt((cellX - dotSize/2)**2 + (cellY - dotSize/2)**2);
+        const v = dist < radius ? 0 : 255;
+        out[ri] = out[ri+1] = out[ri+2] = v; out[ri+3] = 255;
+      }
+    }
+  } else if (filter === "crosshatch") {
+    // Crosshatch based on luminance bands
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const ri = (y * w + x) * 4;
+        const lum = data[ri] * 0.299 + data[ri+1] * 0.587 + data[ri+2] * 0.114;
+        let v = 255;
+        const spacing = 6;
+        if (lum < 200 && (x + y) % spacing === 0) v = 0;
+        if (lum < 150 && (x - y + 1000) % spacing === 0) v = 0;
+        if (lum < 100 && x % spacing === 0) v = 0;
+        if (lum < 50  && y % spacing === 0) v = 0;
+        out[ri] = out[ri+1] = out[ri+2] = v; out[ri+3] = 255;
+      }
+    }
+  } else if (filter === "blueprint") {
+    // Blue-tinted technical drawing look
+    for (let i = 0; i < w * h; i++) {
+      const ri = i * 4;
+      const lum = data[ri] * 0.299 + data[ri+1] * 0.587 + data[ri+2] * 0.114;
+      const invLum = 255 - lum;
+      out[ri]   = clamp(20 + invLum * 0.1);
+      out[ri+1] = clamp(40 + invLum * 0.3);
+      out[ri+2] = clamp(180 + invLum * 0.3);
+      out[ri+3] = 255;
+    }
+    // Add white lines (edge detection)
+    const edges = applyNeuroFilter(data, w, h, "lineart");
+    for (let i = 0; i < w * h; i++) {
+      const ri = i * 4;
+      if (edges[ri] < 100) { out[ri] = 220; out[ri+1] = 235; out[ri+2] = 255; }
+    }
+  }
+
+  return out;
 }
 
 function applySharpen(data: Uint8ClampedArray, w: number, h: number, amount: number): Uint8ClampedArray {
@@ -69,6 +308,26 @@ export function processImage(
 
   const { width: w, height: h } = canvas;
   let { data } = ctx.getImageData(0, 0, w, h);
+
+  // Background removal (before other processing)
+  if (opts.removeBg) {
+    data = applyRemoveBg(data, w, h);
+  }
+
+  // Skin smooth
+  if (opts.skinSmooth && opts.skinSmooth > 0) {
+    data = applySkinSmooth(data, w, h, opts.skinSmooth);
+  }
+
+  // Auto retouch
+  if (opts.autoRetouch) {
+    data = applyAutoRetouch(data, w, h);
+  }
+
+  // Neuro filter (applied before grayscale/contrast)
+  if (opts.neuroFilter && opts.neuroFilter !== "none") {
+    data = applyNeuroFilter(data, w, h, opts.neuroFilter);
+  }
 
   // Sharpen
   if (opts.sharpness > 0) {

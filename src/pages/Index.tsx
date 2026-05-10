@@ -1,6 +1,9 @@
 import { useState, useRef, useCallback, useEffect } from "react";
 import Icon from "@/components/ui/icon";
 import { processImage, downloadPNG, downloadBMP } from "@/lib/imageProcessor";
+import type { NeuroFilter } from "@/lib/imageProcessor";
+import CropTool from "@/components/CropTool";
+import PreviewCanvas from "@/components/PreviewCanvas";
 
 type Tab = "upload" | "editor" | "preview" | "export" | "settings";
 
@@ -66,12 +69,17 @@ export default function Index() {
   const [processedCanvas, setProcessedCanvas] = useState<HTMLCanvasElement | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [processedDataUrl, setProcessedDataUrl] = useState<string | null>(null);
+  // Tools
+  const [skinSmooth, setSkinSmooth] = useState(0);
+  const [autoRetouch, setAutoRetouch] = useState(false);
+  const [removeBg, setRemoveBg] = useState(false);
+  const [neuroFilter, setNeuroFilter] = useState<NeuroFilter>("none");
+  const [showCrop, setShowCrop] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const sourceImgRef = useRef<HTMLImageElement | null>(null);
 
   const runProcessing = useCallback((img: HTMLImageElement) => {
     setIsProcessing(true);
-    // Run in next tick to allow UI to update
     setTimeout(() => {
       try {
         const canvas = processImage(img, {
@@ -83,6 +91,10 @@ export default function Index() {
           gamma: params.gamma,
           bitDepth,
           dithering,
+          skinSmooth,
+          autoRetouch,
+          removeBg,
+          neuroFilter,
         });
         setProcessedCanvas(canvas);
         setProcessedDataUrl(canvas.toDataURL("image/png"));
@@ -90,7 +102,7 @@ export default function Index() {
         setIsProcessing(false);
       }
     }, 10);
-  }, [params, bitDepth, dithering]);
+  }, [params, bitDepth, dithering, skinSmooth, autoRetouch, removeBg, neuroFilter]);
 
   // Re-process whenever params/dithering/bitDepth change
   useEffect(() => {
@@ -134,6 +146,27 @@ export default function Index() {
     };
     img.src = url;
   }, []);
+
+  const handleCropApply = useCallback((croppedUrl: string, croppedImg: HTMLImageElement) => {
+    setImageUrl(croppedUrl);
+    sourceImgRef.current = croppedImg;
+    setShowCrop(false);
+    setIsProcessing(true);
+    setTimeout(() => {
+      try {
+        const canvas = processImage(croppedImg, {
+          contrast: params.contrast, brightness: params.brightness,
+          sharpness: params.sharpness, grayscale: params.grayscale,
+          threshold: params.threshold, gamma: params.gamma,
+          bitDepth, dithering, skinSmooth, autoRetouch, removeBg, neuroFilter,
+        });
+        setProcessedCanvas(canvas);
+        setProcessedDataUrl(canvas.toDataURL("image/png"));
+      } finally {
+        setIsProcessing(false);
+      }
+    }, 10);
+  }, [params, bitDepth, dithering, skinSmooth, autoRetouch, removeBg, neuroFilter]);
 
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -238,6 +271,15 @@ export default function Index() {
 
   return (
     <div className="min-h-screen bg-[#060a12] text-foreground grid-bg relative overflow-hidden">
+      {/* Crop Tool overlay */}
+      {showCrop && imageUrl && (
+        <CropTool
+          imageUrl={imageUrl}
+          onCrop={handleCropApply}
+          onCancel={() => setShowCrop(false)}
+        />
+      )}
+
       <div className="scan-line" />
       <div className="fixed top-0 left-1/4 w-96 h-96 bg-cyan-500/5 rounded-full blur-3xl pointer-events-none" />
       <div className="fixed bottom-1/4 right-1/4 w-64 h-64 bg-emerald-500/5 rounded-full blur-3xl pointer-events-none" />
@@ -354,48 +396,108 @@ export default function Index() {
           <div className="animate-fade-in">
             <div className="mb-4 flex items-center justify-between">
               <h2 className="font-orbitron text-lg font-bold neon-cyan">РЕДАКТОР ПАРАМЕТРОВ</h2>
-              <button onClick={() => { setParams(DEFAULT_PARAMS); setMaterial(null); }} className="text-[10px] font-mono text-cyan-700 hover:text-cyan-400 border border-cyan-900/40 px-3 py-1 rounded transition-colors">
-                СБРОС
-              </button>
+              <div className="flex items-center gap-2">
+                <button onClick={() => setShowCrop(true)} className="flex items-center gap-1.5 text-[10px] font-mono text-cyan-600 hover:text-cyan-300 border border-cyan-900/40 px-3 py-1 rounded transition-colors">
+                  <Icon name="Crop" size={11} />ОБРЕЗКА
+                </button>
+                <button onClick={() => { setParams(DEFAULT_PARAMS); setMaterial(null); setSkinSmooth(0); setAutoRetouch(false); setRemoveBg(false); setNeuroFilter("none"); }} className="text-[10px] font-mono text-cyan-700 hover:text-cyan-400 border border-cyan-900/40 px-3 py-1 rounded transition-colors">
+                  СБРОС
+                </button>
+              </div>
             </div>
 
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
-              {/* Left: preview */}
+              {/* Left: preview + tools */}
               <div className="lg:col-span-2 flex flex-col gap-4">
-                <div className="panel rounded-lg overflow-hidden neon-border">
-                  <div className="px-4 py-2 border-b border-cyan-900/30 flex items-center gap-2">
-                    <div className={`w-1.5 h-1.5 rounded-full ${isProcessing ? "bg-amber-400 animate-pulse" : "bg-cyan-400"}`} />
-                    <span className="text-[10px] font-mono text-cyan-600 tracking-widest">
-                      {isProcessing ? "ОБРАБОТКА..." : "ОБРАБОТАНО"}
-                    </span>
-                    <span className="ml-auto text-[9px] font-mono text-cyan-800">
-                      {params.dpi} DPI · {bitDepth}-BIT · {dithering.toUpperCase()}
-                    </span>
+                {/* Preview canvas with zoom */}
+                <div style={{ height: 340 }}>
+                  <PreviewCanvas
+                    dataUrl={processedDataUrl}
+                    originalUrl={imageUrl}
+                    showComparison={false}
+                    isProcessing={isProcessing}
+                    bitDepth={bitDepth}
+                  />
+                </div>
+
+                {/* TOOLS PANEL */}
+                <div className="panel rounded-lg p-4 neon-border">
+                  <div className="text-[10px] font-mono text-cyan-600 tracking-widest mb-3 flex items-center gap-2">
+                    <Icon name="Wand2" size={10} className="text-cyan-500" />
+                    ИНСТРУМЕНТЫ ОБРАБОТКИ
                   </div>
-                  <div className="p-4 flex items-center justify-center min-h-64 bg-black/40 relative">
-                    {isProcessing && (
-                      <div className="absolute inset-0 flex items-center justify-center bg-black/60 z-10">
-                        <div className="flex flex-col items-center gap-2">
-                          <div className="w-8 h-8 border-2 border-cyan-400 border-t-transparent rounded-full animate-spin" />
-                          <span className="text-[10px] font-mono text-cyan-600">РЕНДЕРИНГ...</span>
+                  <div className="grid grid-cols-2 gap-3">
+                    {/* Skin smooth */}
+                    <div className="bg-black/30 rounded border border-cyan-900/20 p-3">
+                      <div className="flex items-center justify-between mb-2">
+                        <div className="flex items-center gap-1.5">
+                          <Icon name="Sparkles" size={10} className="text-pink-500" />
+                          <span className="text-[10px] font-mono text-cyan-600">СГЛАЖИВАНИЕ КОЖИ</span>
+                        </div>
+                        <span className="text-[10px] font-mono text-cyan-400">{skinSmooth}%</span>
+                      </div>
+                      <input type="range" className="laser-slider w-full" min={0} max={100}
+                        style={{ "--val": `${skinSmooth}%` } as React.CSSProperties}
+                        value={skinSmooth} onChange={e => setSkinSmooth(Number(e.target.value))} />
+                      <p className="text-[8px] font-mono text-cyan-900 mt-1.5">Размытие только тон кожи, сохраняет детали</p>
+                    </div>
+
+                    {/* Auto retouch */}
+                    <div className={`bg-black/30 rounded border p-3 transition-all cursor-pointer ${autoRetouch ? "border-violet-500/40 bg-violet-950/10" : "border-cyan-900/20"}`}
+                      onClick={() => setAutoRetouch(r => !r)}>
+                      <div className="flex items-center justify-between mb-2">
+                        <div className="flex items-center gap-1.5">
+                          <Icon name="ScanFace" size={10} className={autoRetouch ? "text-violet-400" : "text-cyan-700"} />
+                          <span className={`text-[10px] font-mono ${autoRetouch ? "text-violet-300" : "text-cyan-600"}`}>АВТОРЕТУШЬ</span>
+                        </div>
+                        <div className={`w-8 h-4 rounded-full border relative transition-all ${autoRetouch ? "border-violet-400 bg-violet-950/50" : "border-cyan-900/50 bg-black/30"}`}>
+                          <span className={`absolute top-0.5 w-3 h-3 rounded-full transition-all ${autoRetouch ? "right-0.5 bg-violet-400" : "left-0.5 bg-cyan-800"}`} />
                         </div>
                       </div>
-                    )}
-                    {processedDataUrl ? (
-                      <img
-                        src={processedDataUrl}
-                        alt="processed"
-                        className="max-w-full max-h-56 object-contain rounded"
-                        style={{ imageRendering: bitDepth === 1 ? "pixelated" : "auto" }}
-                      />
-                    ) : (
-                      <img
-                        src={imageUrl!}
-                        alt="preview"
-                        className="max-w-full max-h-56 object-contain rounded"
-                        style={{ filter: getImageFilter() }}
-                      />
-                    )}
+                      <p className="text-[8px] font-mono text-cyan-900">Деноизинг + локальный контраст + подъём теней</p>
+                    </div>
+
+                    {/* Remove background */}
+                    <div className={`bg-black/30 rounded border p-3 transition-all cursor-pointer ${removeBg ? "border-amber-500/40 bg-amber-950/10" : "border-cyan-900/20"}`}
+                      onClick={() => setRemoveBg(r => !r)}>
+                      <div className="flex items-center justify-between mb-2">
+                        <div className="flex items-center gap-1.5">
+                          <Icon name="Eraser" size={10} className={removeBg ? "text-amber-400" : "text-cyan-700"} />
+                          <span className={`text-[10px] font-mono ${removeBg ? "text-amber-300" : "text-cyan-600"}`}>УДАЛЕНИЕ ФОНА</span>
+                        </div>
+                        <div className={`w-8 h-4 rounded-full border relative transition-all ${removeBg ? "border-amber-400 bg-amber-950/50" : "border-cyan-900/50 bg-black/30"}`}>
+                          <span className={`absolute top-0.5 w-3 h-3 rounded-full transition-all ${removeBg ? "right-0.5 bg-amber-400" : "left-0.5 bg-cyan-800"}`} />
+                        </div>
+                      </div>
+                      <p className="text-[8px] font-mono text-cyan-900">Flood-fill от углов по цвету фона</p>
+                    </div>
+
+                    {/* Neuro filters */}
+                    <div className="bg-black/30 rounded border border-cyan-900/20 p-3">
+                      <div className="flex items-center gap-1.5 mb-2">
+                        <Icon name="BrainCircuit" size={10} className="text-cyan-500" />
+                        <span className="text-[10px] font-mono text-cyan-600">НЕЙРОФИЛЬТРЫ</span>
+                      </div>
+                      <div className="grid grid-cols-2 gap-1">
+                        {([
+                          { id: "none",       label: "Нет",        color: "cyan" },
+                          { id: "engrave",    label: "Гравюра",    color: "emerald" },
+                          { id: "lineart",    label: "Линии",      color: "emerald" },
+                          { id: "stipple",    label: "Пунктир",    color: "emerald" },
+                          { id: "crosshatch", label: "Штриховка",  color: "emerald" },
+                          { id: "blueprint",  label: "Чертёж",     color: "blue" },
+                        ] as { id: NeuroFilter; label: string; color: string }[]).map(f => (
+                          <button key={f.id} onClick={() => setNeuroFilter(f.id)}
+                            className={`px-2 py-1 text-[9px] font-mono rounded border transition-all text-left ${
+                              neuroFilter === f.id
+                                ? f.color === "blue" ? "border-blue-400 text-blue-300 bg-blue-950/30" : "border-emerald-400 text-emerald-300 bg-emerald-950/30"
+                                : "border-cyan-900/30 text-cyan-800 hover:border-cyan-700/50 hover:text-cyan-600"
+                            }`}>
+                            {f.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
                   </div>
                 </div>
 
@@ -606,8 +708,15 @@ export default function Index() {
             <div className="mb-4 flex items-center justify-between">
               <h2 className="font-orbitron text-lg font-bold neon-cyan">ПРЕДПРОСМОТР ГРАВИРОВКИ</h2>
               <div className="flex items-center gap-3">
-                <button onClick={() => setShowComparison(!showComparison)} className="text-[10px] font-mono px-3 py-1.5 rounded border border-cyan-900/40 text-cyan-600 hover:text-cyan-300 hover:border-cyan-600/40 transition-all">
-                  {showComparison ? "СКРЫТЬ" : "СРАВНЕНИЕ"}
+                <div className="flex items-center gap-2 text-[9px] font-mono text-cyan-800 border border-cyan-900/30 rounded px-3 py-1.5">
+                  <span>{params.dpi} DPI</span><span>·</span>
+                  <span>{bitDepth}-BIT</span><span>·</span>
+                  <span>{dithering.toUpperCase()}</span>
+                  {neuroFilter !== "none" && <><span>·</span><span className="text-emerald-600">{neuroFilter.toUpperCase()}</span></>}
+                </div>
+                <button onClick={() => setShowComparison(!showComparison)}
+                  className={`text-[10px] font-mono px-3 py-1.5 rounded border transition-all ${showComparison ? "border-cyan-400 text-cyan-300 bg-cyan-950/30" : "border-cyan-900/40 text-cyan-600 hover:text-cyan-300 hover:border-cyan-600/40"}`}>
+                  {showComparison ? "⇔ СРАВНЕНИЕ ВКЛ" : "⇔ СРАВНЕНИЕ"}
                 </button>
                 <button onClick={() => setActiveTab("export")} className="neon-btn-green neon-btn text-[10px] px-4 py-1.5 rounded font-orbitron tracking-widest">
                   ЭКСПОРТ →
@@ -615,54 +724,14 @@ export default function Index() {
               </div>
             </div>
 
-            <div className={`grid ${showComparison ? "grid-cols-2" : "grid-cols-1"} gap-5`}>
-              {showComparison && (
-                <div className="panel rounded-lg overflow-hidden neon-border">
-                  <div className="px-4 py-2 border-b border-cyan-900/30">
-                    <span className="text-[10px] font-mono text-cyan-600">ОРИГИНАЛ</span>
-                  </div>
-                  <div className="p-4 flex items-center justify-center min-h-80 bg-black/40">
-                    <img src={imageUrl} alt="original" className="max-w-full max-h-72 object-contain rounded" />
-                  </div>
-                </div>
-              )}
-              <div className="panel rounded-lg overflow-hidden neon-border">
-                <div className="px-4 py-2 border-b border-cyan-900/30 flex items-center justify-between">
-                  <span className="text-[10px] font-mono text-emerald-500">РЕЗУЛЬТАТ ГРАВИРОВКИ</span>
-                  <div className="flex items-center gap-3 text-[10px] font-mono text-cyan-700">
-                    <span>{params.dpi} DPI</span>
-                    <span>·</span>
-                    <span>{bitDepth}-BIT</span>
-                    <span>·</span>
-                    <span>{dithering.toUpperCase()}</span>
-                  </div>
-                </div>
-                <div
-                  className="p-4 flex items-center justify-center min-h-80 bg-black/40"
-                  style={{ backgroundImage: "radial-gradient(circle, #1a1a1a 1px, transparent 1px)", backgroundSize: "4px 4px" }}
-                >
-                  {isProcessing ? (
-                    <div className="flex flex-col items-center gap-3">
-                      <div className="w-10 h-10 border-2 border-cyan-400 border-t-transparent rounded-full animate-spin" />
-                      <span className="text-[10px] font-mono text-cyan-600">РЕНДЕРИНГ...</span>
-                    </div>
-                  ) : processedDataUrl ? (
-                    <img
-                      src={processedDataUrl}
-                      alt="engraved"
-                      className="max-w-full max-h-72 object-contain rounded"
-                      style={{ imageRendering: bitDepth === 1 ? "pixelated" : "auto" }}
-                    />
-                  ) : (
-                    <img
-                      src={imageUrl}
-                      alt="engraved"
-                      className="max-w-full max-h-72 object-contain rounded"
-                      style={{ filter: "grayscale(1) contrast(1.2)" }}
-                    />
-                  )}
-                </div>
-              </div>
+            <div style={{ height: 480 }}>
+              <PreviewCanvas
+                dataUrl={processedDataUrl}
+                originalUrl={imageUrl}
+                showComparison={showComparison}
+                isProcessing={isProcessing}
+                bitDepth={bitDepth}
+              />
             </div>
 
             <div className="mt-5 panel rounded-lg p-4 neon-border">
