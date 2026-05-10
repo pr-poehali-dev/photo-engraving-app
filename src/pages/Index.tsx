@@ -1,5 +1,6 @@
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
 import Icon from "@/components/ui/icon";
+import { processImage, downloadPNG, downloadBMP } from "@/lib/imageProcessor";
 
 type Tab = "upload" | "editor" | "preview" | "export" | "settings";
 
@@ -62,7 +63,41 @@ export default function Index() {
   const [laserType, setLaserType] = useState<LaserType>("CO2");
   const [wavelength, setWavelength] = useState<string>("10600 нм");
   const [material, setMaterial] = useState<Material | null>(null);
+  const [processedCanvas, setProcessedCanvas] = useState<HTMLCanvasElement | null>(null);
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [processedDataUrl, setProcessedDataUrl] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const sourceImgRef = useRef<HTMLImageElement | null>(null);
+
+  const runProcessing = useCallback((img: HTMLImageElement) => {
+    setIsProcessing(true);
+    // Run in next tick to allow UI to update
+    setTimeout(() => {
+      try {
+        const canvas = processImage(img, {
+          contrast: params.contrast,
+          brightness: params.brightness,
+          sharpness: params.sharpness,
+          grayscale: params.grayscale,
+          threshold: params.threshold,
+          gamma: params.gamma,
+          bitDepth,
+          dithering,
+        });
+        setProcessedCanvas(canvas);
+        setProcessedDataUrl(canvas.toDataURL("image/png"));
+      } finally {
+        setIsProcessing(false);
+      }
+    }, 10);
+  }, [params, bitDepth, dithering]);
+
+  // Re-process whenever params/dithering/bitDepth change
+  useEffect(() => {
+    if (sourceImgRef.current) {
+      runProcessing(sourceImgRef.current);
+    }
+  }, [runProcessing]);
 
   const handleFile = useCallback((file: File) => {
     if (!file.type.startsWith("image/")) return;
@@ -70,6 +105,34 @@ export default function Index() {
     setImageUrl(url);
     setImageName(file.name);
     setActiveTab("editor");
+    // Pre-load image into ref for processing
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    img.onload = () => {
+      sourceImgRef.current = img;
+      // runProcessing will be called via useEffect when sourceImgRef is set
+      // but we need to trigger it explicitly on first load
+      setIsProcessing(true);
+      setTimeout(() => {
+        try {
+          const canvas = processImage(img, {
+            contrast: DEFAULT_PARAMS.contrast,
+            brightness: DEFAULT_PARAMS.brightness,
+            sharpness: DEFAULT_PARAMS.sharpness,
+            grayscale: DEFAULT_PARAMS.grayscale,
+            threshold: DEFAULT_PARAMS.threshold,
+            gamma: DEFAULT_PARAMS.gamma,
+            bitDepth: 1,
+            dithering: "floyd",
+          });
+          setProcessedCanvas(canvas);
+          setProcessedDataUrl(canvas.toDataURL("image/png"));
+        } finally {
+          setIsProcessing(false);
+        }
+      }, 10);
+    };
+    img.src = url;
   }, []);
 
   const handleDrop = useCallback((e: React.DragEvent) => {
@@ -105,6 +168,16 @@ export default function Index() {
     const b = (params.brightness - 50) / 50 * 0.5;
     const g = params.grayscale / 100;
     return `grayscale(${g}) contrast(${c}) brightness(${1 + b})`;
+  };
+
+  const handleDownloadPNG = () => {
+    if (!processedCanvas) return;
+    downloadPNG(processedCanvas, imageName);
+  };
+
+  const handleDownloadBMP = () => {
+    if (!processedCanvas) return;
+    downloadBMP(processedCanvas, imageName, bitDepth);
   };
 
   const tabs: { id: Tab; label: string; icon: string }[] = [
@@ -291,19 +364,38 @@ export default function Index() {
               <div className="lg:col-span-2 flex flex-col gap-4">
                 <div className="panel rounded-lg overflow-hidden neon-border">
                   <div className="px-4 py-2 border-b border-cyan-900/30 flex items-center gap-2">
-                    <div className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse" />
-                    <span className="text-[10px] font-mono text-cyan-600 tracking-widest">LIVE PREVIEW</span>
+                    <div className={`w-1.5 h-1.5 rounded-full ${isProcessing ? "bg-amber-400 animate-pulse" : "bg-cyan-400"}`} />
+                    <span className="text-[10px] font-mono text-cyan-600 tracking-widest">
+                      {isProcessing ? "ОБРАБОТКА..." : "ОБРАБОТАНО"}
+                    </span>
                     <span className="ml-auto text-[9px] font-mono text-cyan-800">
                       {params.dpi} DPI · {bitDepth}-BIT · {dithering.toUpperCase()}
                     </span>
                   </div>
-                  <div className="p-4 flex items-center justify-center min-h-64 bg-black/40">
-                    <img
-                      src={imageUrl}
-                      alt="preview"
-                      className="max-w-full max-h-56 object-contain rounded"
-                      style={{ filter: getImageFilter(), imageRendering: bitDepth === 1 ? "pixelated" : "auto" }}
-                    />
+                  <div className="p-4 flex items-center justify-center min-h-64 bg-black/40 relative">
+                    {isProcessing && (
+                      <div className="absolute inset-0 flex items-center justify-center bg-black/60 z-10">
+                        <div className="flex flex-col items-center gap-2">
+                          <div className="w-8 h-8 border-2 border-cyan-400 border-t-transparent rounded-full animate-spin" />
+                          <span className="text-[10px] font-mono text-cyan-600">РЕНДЕРИНГ...</span>
+                        </div>
+                      </div>
+                    )}
+                    {processedDataUrl ? (
+                      <img
+                        src={processedDataUrl}
+                        alt="processed"
+                        className="max-w-full max-h-56 object-contain rounded"
+                        style={{ imageRendering: bitDepth === 1 ? "pixelated" : "auto" }}
+                      />
+                    ) : (
+                      <img
+                        src={imageUrl!}
+                        alt="preview"
+                        className="max-w-full max-h-56 object-contain rounded"
+                        style={{ filter: getImageFilter() }}
+                      />
+                    )}
                   </div>
                 </div>
 
@@ -537,18 +629,38 @@ export default function Index() {
               <div className="panel rounded-lg overflow-hidden neon-border">
                 <div className="px-4 py-2 border-b border-cyan-900/30 flex items-center justify-between">
                   <span className="text-[10px] font-mono text-emerald-500">РЕЗУЛЬТАТ ГРАВИРОВКИ</span>
-                  <span className="text-[10px] font-mono text-cyan-700">{params.dpi} DPI</span>
+                  <div className="flex items-center gap-3 text-[10px] font-mono text-cyan-700">
+                    <span>{params.dpi} DPI</span>
+                    <span>·</span>
+                    <span>{bitDepth}-BIT</span>
+                    <span>·</span>
+                    <span>{dithering.toUpperCase()}</span>
+                  </div>
                 </div>
                 <div
                   className="p-4 flex items-center justify-center min-h-80 bg-black/40"
                   style={{ backgroundImage: "radial-gradient(circle, #1a1a1a 1px, transparent 1px)", backgroundSize: "4px 4px" }}
                 >
-                  <img
-                    src={imageUrl}
-                    alt="engraved"
-                    className="max-w-full max-h-72 object-contain rounded"
-                    style={{ filter: `grayscale(1) contrast(${params.contrast / 50}) brightness(${1 + (params.brightness - 50) / 100}) invert(1)`, mixBlendMode: "multiply" }}
-                  />
+                  {isProcessing ? (
+                    <div className="flex flex-col items-center gap-3">
+                      <div className="w-10 h-10 border-2 border-cyan-400 border-t-transparent rounded-full animate-spin" />
+                      <span className="text-[10px] font-mono text-cyan-600">РЕНДЕРИНГ...</span>
+                    </div>
+                  ) : processedDataUrl ? (
+                    <img
+                      src={processedDataUrl}
+                      alt="engraved"
+                      className="max-w-full max-h-72 object-contain rounded"
+                      style={{ imageRendering: bitDepth === 1 ? "pixelated" : "auto" }}
+                    />
+                  ) : (
+                    <img
+                      src={imageUrl}
+                      alt="engraved"
+                      className="max-w-full max-h-72 object-contain rounded"
+                      style={{ filter: "grayscale(1) contrast(1.2)" }}
+                    />
+                  )}
                 </div>
               </div>
             </div>
@@ -582,31 +694,78 @@ export default function Index() {
               <h2 className="font-orbitron text-lg font-bold neon-cyan mb-1">ЭКСПОРТ ФАЙЛА</h2>
               <p className="text-cyan-700 text-sm font-ibm">Выберите формат для вашего лазерного оборудования</p>
             </div>
+
+            {/* Quick download bar */}
+            {processedDataUrl && (
+              <div className="mb-5 panel rounded-lg p-4 neon-border border-emerald-900/40 bg-emerald-950/10">
+                <div className="flex items-center gap-3 flex-wrap">
+                  <div className="flex items-center gap-2">
+                    <div className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                    <span className="text-[10px] font-mono text-emerald-500 tracking-widest">ФАЙЛ ГОТОВ К СКАЧИВАНИЮ</span>
+                  </div>
+                  <div className="flex gap-2 ml-auto">
+                    <button
+                      onClick={handleDownloadPNG}
+                      className="flex items-center gap-2 px-4 py-2 rounded border border-cyan-500/50 bg-cyan-950/30 text-cyan-300 font-orbitron text-[10px] tracking-widest hover:border-cyan-400 hover:bg-cyan-950/50 transition-all"
+                    >
+                      <Icon name="Download" size={12} />
+                      PNG
+                    </button>
+                    <button
+                      onClick={handleDownloadBMP}
+                      className="flex items-center gap-2 px-4 py-2 rounded border border-emerald-500/50 bg-emerald-950/30 text-emerald-300 font-orbitron text-[10px] tracking-widest hover:border-emerald-400 hover:bg-emerald-950/50 transition-all"
+                    >
+                      <Icon name="Download" size={12} />
+                      BMP {bitDepth}-BIT
+                    </button>
+                  </div>
+                </div>
+                {processedDataUrl && (
+                  <div className="mt-3 flex items-center gap-3">
+                    <img src={processedDataUrl} alt="export preview" className="h-12 rounded border border-cyan-900/30 object-contain bg-black/40" />
+                    <div className="text-[9px] font-mono text-cyan-800 leading-5">
+                      <div>Режим: {bitDepth}-bit · Дизеринг: {dithering}</div>
+                      <div>DPI: {params.dpi} · Шаг: {(25.4 / params.dpi).toFixed(3)} мм/точку</div>
+                      <div>Лазер: {LASER_TYPES[laserType].label} · {wavelength}</div>
+                      {material && <div>Материал: {MATERIAL_PRESETS[material].label}</div>}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
               <div className="lg:col-span-2 grid grid-cols-2 gap-4">
                 {[
-                  { format: "PNG", desc: "Растровый формат с прозрачностью", icon: "Image", tag: "Универсальный", color: "cyan" },
-                  { format: "BMP", desc: "Без сжатия, максимальное качество", icon: "FileImage", tag: "Рекомендуется", color: "emerald" },
-                  { format: "G-CODE", desc: "ЧПУ команды для лазера", icon: "Terminal", tag: "ЧПУ / Станки", color: "cyan" },
-                  { format: "DXF", desc: "Векторный формат AutoCAD", icon: "Layers", tag: "Векторный", color: "cyan" },
-                  { format: "SVG", desc: "Масштабируемая векторная графика", icon: "PenTool", tag: "Векторный", color: "cyan" },
-                  { format: "LBRN", desc: "Нативный формат LightBurn", icon: "Flame", tag: "LightBurn", color: "emerald" },
+                  { format: "PNG", desc: "Растровый, с применением всех фильтров", icon: "Image", tag: "Готово", color: "emerald", action: handleDownloadPNG, active: true },
+                  { format: `BMP ${bitDepth}-bit`, desc: bitDepth === 1 ? "Чёрно-белый без сжатия для станков" : "8-бит серый без сжатия", icon: "FileImage", tag: "Готово", color: "emerald", action: handleDownloadBMP, active: true },
+                  { format: "G-CODE", desc: "ЧПУ команды для лазера", icon: "Terminal", tag: "Скоро", color: "cyan", action: null, active: false },
+                  { format: "DXF", desc: "Векторный формат AutoCAD", icon: "Layers", tag: "Скоро", color: "cyan", action: null, active: false },
+                  { format: "SVG", desc: "Масштабируемая векторная графика", icon: "PenTool", tag: "Скоро", color: "cyan", action: null, active: false },
+                  { format: "LBRN", desc: "Нативный формат LightBurn", icon: "Flame", tag: "Скоро", color: "cyan", action: null, active: false },
                 ].map((item) => (
-                  <button key={item.format} className="panel neon-border rounded-lg p-4 text-left hover:border-cyan-400/50 transition-all duration-200 group">
+                  <button
+                    key={item.format}
+                    onClick={item.action ?? undefined}
+                    disabled={!item.active || !processedDataUrl}
+                    className={`panel neon-border rounded-lg p-4 text-left transition-all duration-200 group ${item.active && processedDataUrl ? "hover:border-emerald-400/60 cursor-pointer" : "opacity-50 cursor-not-allowed"}`}
+                  >
                     <div className="flex items-start justify-between mb-3">
-                      <div className={`w-10 h-10 rounded border ${item.color === "emerald" ? "border-emerald-500/30 bg-emerald-950/20" : "border-cyan-500/30 bg-cyan-950/20"} flex items-center justify-center`}>
-                        <Icon name={item.icon} fallback="File" size={16} className={item.color === "emerald" ? "text-emerald-400" : "text-cyan-400"} />
+                      <div className={`w-10 h-10 rounded border ${item.color === "emerald" && item.active ? "border-emerald-500/40 bg-emerald-950/20" : "border-cyan-500/20 bg-cyan-950/10"} flex items-center justify-center`}>
+                        <Icon name={item.icon} fallback="File" size={16} className={item.color === "emerald" && item.active ? "text-emerald-400" : "text-cyan-700"} />
                       </div>
-                      <span className={`text-[9px] font-mono px-2 py-0.5 rounded border ${item.color === "emerald" ? "border-emerald-800/50 text-emerald-600" : "border-cyan-800/50 text-cyan-700"}`}>
+                      <span className={`text-[9px] font-mono px-2 py-0.5 rounded border ${item.active ? "border-emerald-700/50 text-emerald-500" : "border-cyan-900/30 text-cyan-800"}`}>
                         {item.tag}
                       </span>
                     </div>
-                    <div className="font-orbitron text-base font-bold text-cyan-300 mb-1">{item.format}</div>
+                    <div className={`font-orbitron text-sm font-bold mb-1 ${item.active ? "text-cyan-200" : "text-cyan-800"}`}>{item.format}</div>
                     <div className="text-xs text-cyan-700 font-ibm">{item.desc}</div>
-                    <div className="mt-3 flex items-center gap-1.5 text-[10px] font-mono text-cyan-700 group-hover:text-cyan-400 transition-colors">
-                      <Icon name="Download" size={10} />
-                      СКАЧАТЬ
-                    </div>
+                    {item.active && (
+                      <div className="mt-3 flex items-center gap-1.5 text-[10px] font-mono text-emerald-700 group-hover:text-emerald-400 transition-colors">
+                        <Icon name="Download" size={10} />
+                        СКАЧАТЬ
+                      </div>
+                    )}
                   </button>
                 ))}
               </div>
@@ -644,9 +803,21 @@ export default function Index() {
                     ))}
                   </div>
                 </div>
-                <button className="neon-btn-green neon-btn w-full py-3 rounded-lg font-orbitron text-xs tracking-widest">
+                <button
+                  onClick={handleDownloadPNG}
+                  disabled={!processedDataUrl}
+                  className="neon-btn-green neon-btn w-full py-3 rounded-lg font-orbitron text-xs tracking-widest disabled:opacity-40 disabled:cursor-not-allowed"
+                >
                   <Icon name="Download" size={14} className="inline mr-2" />
-                  ЭКСПОРТ ВСЕХ
+                  СКАЧАТЬ PNG
+                </button>
+                <button
+                  onClick={handleDownloadBMP}
+                  disabled={!processedDataUrl}
+                  className="neon-btn w-full py-3 rounded-lg font-orbitron text-xs tracking-widest mt-2 disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  <Icon name="Download" size={14} className="inline mr-2" />
+                  СКАЧАТЬ BMP {bitDepth}-BIT
                 </button>
               </div>
             </div>
