@@ -202,36 +202,6 @@
   border: 1px solid rgba(0, 245, 212, 0.15);
 }
 
-/* Scan line animation */
-@keyframes scan {
-  0% {
-    transform: translateY(-100%);
-    opacity: 0.5;
-  }
-  100% {
-    transform: translateY(100vh);
-    opacity: 0;
-  }
-}
-
-.scan-line {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 2px;
-  background: linear-gradient(
-    90deg,
-    transparent,
-    var(--neon-cyan),
-    transparent
-  );
-  animation: scan 8s linear infinite;
-  pointer-events: none;
-  z-index: 100;
-  opacity: 0.3;
-}
-
 /* Pulse animation */
 @keyframes pulse-neon {
   0%,

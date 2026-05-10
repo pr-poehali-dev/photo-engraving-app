@@ -1,7 +1,6 @@
 import { useState, useRef, useCallback, useEffect } from "react";
 import Icon from "@/components/ui/icon";
-import { processImage, downloadPNG, downloadBMP } from "@/lib/imageProcessor";
-import type { NeuroFilter } from "@/lib/imageProcessor";
+import { processImage, downloadPNG, downloadBMP, downloadDXF, downloadLBRN2 } from "@/lib/imageProcessor";
 import CropTool from "@/components/CropTool";
 import PreviewCanvas from "@/components/PreviewCanvas";
 
@@ -73,7 +72,6 @@ export default function Index() {
   const [skinSmooth, setSkinSmooth] = useState(0);
   const [autoRetouch, setAutoRetouch] = useState(false);
   const [removeBg, setRemoveBg] = useState(false);
-  const [neuroFilter, setNeuroFilter] = useState<NeuroFilter>("none");
   const [showCrop, setShowCrop] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const sourceImgRef = useRef<HTMLImageElement | null>(null);
@@ -158,7 +156,7 @@ export default function Index() {
           contrast: params.contrast, brightness: params.brightness,
           sharpness: params.sharpness, grayscale: params.grayscale,
           threshold: params.threshold, gamma: params.gamma,
-          bitDepth, dithering, skinSmooth, autoRetouch, removeBg, neuroFilter,
+          bitDepth, dithering, skinSmooth, autoRetouch, removeBg,
         });
         setProcessedCanvas(canvas);
         setProcessedDataUrl(canvas.toDataURL("image/png"));
@@ -166,7 +164,7 @@ export default function Index() {
         setIsProcessing(false);
       }
     }, 10);
-  }, [params, bitDepth, dithering, skinSmooth, autoRetouch, removeBg, neuroFilter]);
+  }, [params, bitDepth, dithering, skinSmooth, autoRetouch, removeBg]);
 
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -211,6 +209,22 @@ export default function Index() {
   const handleDownloadBMP = () => {
     if (!processedCanvas) return;
     downloadBMP(processedCanvas, imageName, bitDepth);
+  };
+
+  const handleDownloadDXF = () => {
+    if (!processedCanvas) return;
+    downloadDXF(processedCanvas, imageName);
+  };
+
+  const handleDownloadLBRN2 = () => {
+    if (!processedCanvas) return;
+    downloadLBRN2(processedCanvas, imageName, {
+      speed: params.speed,
+      power: params.power,
+      dpi: params.dpi,
+      passes: params.passes,
+      laserType: laserType,
+    });
   };
 
   const tabs: { id: Tab; label: string; icon: string }[] = [
@@ -280,7 +294,7 @@ export default function Index() {
         />
       )}
 
-      <div className="scan-line" />
+
       <div className="fixed top-0 left-1/4 w-96 h-96 bg-cyan-500/5 rounded-full blur-3xl pointer-events-none" />
       <div className="fixed bottom-1/4 right-1/4 w-64 h-64 bg-emerald-500/5 rounded-full blur-3xl pointer-events-none" />
 
@@ -400,7 +414,7 @@ export default function Index() {
                 <button onClick={() => setShowCrop(true)} className="flex items-center gap-1.5 text-[10px] font-mono text-cyan-600 hover:text-cyan-300 border border-cyan-900/40 px-3 py-1 rounded transition-colors">
                   <Icon name="Crop" size={11} />ОБРЕЗКА
                 </button>
-                <button onClick={() => { setParams(DEFAULT_PARAMS); setMaterial(null); setSkinSmooth(0); setAutoRetouch(false); setRemoveBg(false); setNeuroFilter("none"); }} className="text-[10px] font-mono text-cyan-700 hover:text-cyan-400 border border-cyan-900/40 px-3 py-1 rounded transition-colors">
+                <button onClick={() => { setParams(DEFAULT_PARAMS); setMaterial(null); setSkinSmooth(0); setAutoRetouch(false); setRemoveBg(false); }} className="text-[10px] font-mono text-cyan-700 hover:text-cyan-400 border border-cyan-900/40 px-3 py-1 rounded transition-colors">
                   СБРОС
                 </button>
               </div>
@@ -472,32 +486,6 @@ export default function Index() {
                       <p className="text-[8px] font-mono text-cyan-900">Flood-fill от углов по цвету фона</p>
                     </div>
 
-                    {/* Neuro filters */}
-                    <div className="bg-black/30 rounded border border-cyan-900/20 p-3">
-                      <div className="flex items-center gap-1.5 mb-2">
-                        <Icon name="BrainCircuit" size={10} className="text-cyan-500" />
-                        <span className="text-[10px] font-mono text-cyan-600">НЕЙРОФИЛЬТРЫ</span>
-                      </div>
-                      <div className="grid grid-cols-2 gap-1">
-                        {([
-                          { id: "none",       label: "Нет",        color: "cyan" },
-                          { id: "engrave",    label: "Гравюра",    color: "emerald" },
-                          { id: "lineart",    label: "Линии",      color: "emerald" },
-                          { id: "stipple",    label: "Пунктир",    color: "emerald" },
-                          { id: "crosshatch", label: "Штриховка",  color: "emerald" },
-                          { id: "blueprint",  label: "Чертёж",     color: "blue" },
-                        ] as { id: NeuroFilter; label: string; color: string }[]).map(f => (
-                          <button key={f.id} onClick={() => setNeuroFilter(f.id)}
-                            className={`px-2 py-1 text-[9px] font-mono rounded border transition-all text-left ${
-                              neuroFilter === f.id
-                                ? f.color === "blue" ? "border-blue-400 text-blue-300 bg-blue-950/30" : "border-emerald-400 text-emerald-300 bg-emerald-950/30"
-                                : "border-cyan-900/30 text-cyan-800 hover:border-cyan-700/50 hover:text-cyan-600"
-                            }`}>
-                            {f.label}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
                   </div>
                 </div>
 
@@ -712,7 +700,6 @@ export default function Index() {
                   <span>{params.dpi} DPI</span><span>·</span>
                   <span>{bitDepth}-BIT</span><span>·</span>
                   <span>{dithering.toUpperCase()}</span>
-                  {neuroFilter !== "none" && <><span>·</span><span className="text-emerald-600">{neuroFilter.toUpperCase()}</span></>}
                 </div>
                 <button onClick={() => setShowComparison(!showComparison)}
                   className={`text-[10px] font-mono px-3 py-1.5 rounded border transition-all ${showComparison ? "border-cyan-400 text-cyan-300 bg-cyan-950/30" : "border-cyan-900/40 text-cyan-600 hover:text-cyan-300 hover:border-cyan-600/40"}`}>
@@ -787,6 +774,20 @@ export default function Index() {
                       <Icon name="Download" size={12} />
                       BMP {bitDepth}-BIT
                     </button>
+                    <button
+                      onClick={handleDownloadDXF}
+                      className="flex items-center gap-2 px-4 py-2 rounded border border-cyan-500/50 bg-cyan-950/30 text-cyan-300 font-orbitron text-[10px] tracking-widest hover:border-cyan-400 hover:bg-cyan-950/50 transition-all"
+                    >
+                      <Icon name="Download" size={12} />
+                      DXF
+                    </button>
+                    <button
+                      onClick={handleDownloadLBRN2}
+                      className="flex items-center gap-2 px-4 py-2 rounded border border-orange-500/50 bg-orange-950/20 text-orange-300 font-orbitron text-[10px] tracking-widest hover:border-orange-400 hover:bg-orange-950/30 transition-all"
+                    >
+                      <Icon name="Download" size={12} />
+                      LBRN2
+                    </button>
                   </div>
                 </div>
                 {processedDataUrl && (
@@ -808,10 +809,10 @@ export default function Index() {
                 {[
                   { format: "PNG", desc: "Растровый, с применением всех фильтров", icon: "Image", tag: "Готово", color: "emerald", action: handleDownloadPNG, active: true },
                   { format: `BMP ${bitDepth}-bit`, desc: bitDepth === 1 ? "Чёрно-белый без сжатия для станков" : "8-бит серый без сжатия", icon: "FileImage", tag: "Готово", color: "emerald", action: handleDownloadBMP, active: true },
+                  { format: "DXF", desc: "Векторный формат AutoCAD / CorelDRAW", icon: "Layers", tag: "Готово", color: "emerald", action: handleDownloadDXF, active: true },
+                  { format: "LBRN2", desc: "Нативный формат LightBurn с параметрами", icon: "Flame", tag: "Готово", color: "emerald", action: handleDownloadLBRN2, active: true },
                   { format: "G-CODE", desc: "ЧПУ команды для лазера", icon: "Terminal", tag: "Скоро", color: "cyan", action: null, active: false },
-                  { format: "DXF", desc: "Векторный формат AutoCAD", icon: "Layers", tag: "Скоро", color: "cyan", action: null, active: false },
                   { format: "SVG", desc: "Масштабируемая векторная графика", icon: "PenTool", tag: "Скоро", color: "cyan", action: null, active: false },
-                  { format: "LBRN", desc: "Нативный формат LightBurn", icon: "Flame", tag: "Скоро", color: "cyan", action: null, active: false },
                 ].map((item) => (
                   <button
                     key={item.format}

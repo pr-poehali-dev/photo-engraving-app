@@ -533,3 +533,113 @@ function triggerDownload(buf: ArrayBuffer, name: string) {
   a.click();
   URL.revokeObjectURL(a.href);
 }
+
+function triggerTextDownload(text: string, name: string, mime = "text/plain") {
+  const blob = new Blob([text], { type: mime });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+// Export as DXF (polyline raster → vector outlines via contour tracing)
+export function downloadDXF(canvas: HTMLCanvasElement, filename: string) {
+  const ctx = canvas.getContext("2d")!;
+  const { width: w, height: h } = canvas;
+  const { data } = ctx.getImageData(0, 0, w, h);
+  const base = filename.replace(/\.[^.]+$/, "");
+
+  // Scan horizontal runs of dark pixels (value < 128) → line segments
+  const lines: string[] = [];
+  let entityCount = 0;
+
+  for (let y = 0; y < h; y++) {
+    let runStart = -1;
+    for (let x = 0; x <= w; x++) {
+      const isDark = x < w && data[(y * w + x) * 4] < 128;
+      if (isDark && runStart < 0) {
+        runStart = x;
+      } else if (!isDark && runStart >= 0) {
+        // Emit a LINE entity (mm coords: 1 px = 25.4/dpi mm, assume 254dpi → 0.1mm/px)
+        const x1 = runStart * 0.1;
+        const x2 = x * 0.1;
+        const yCoord = -y * 0.1; // DXF Y is inverted
+        lines.push(`LINE\n 8\nLASER\n10\n${x1.toFixed(4)}\n20\n${yCoord.toFixed(4)}\n30\n0.0\n11\n${x2.toFixed(4)}\n21\n${yCoord.toFixed(4)}\n31\n0.0\n0\n`);
+        entityCount++;
+        runStart = -1;
+      }
+    }
+  }
+
+  const dxf = [
+    "0\nSECTION\n2\nHEADER\n0\nENDSEC\n",
+    "0\nSECTION\n2\nTABLES\n",
+    "0\nTABLE\n2\nLAYER\n70\n1\n",
+    "0\nLAYER\n2\nLASER\n70\n0\n62\n7\n6\nCONTINUOUS\n",
+    "0\nENDTAB\n0\nENDSEC\n",
+    "0\nSECTION\n2\nENTITIES\n0\n",
+    ...lines,
+    "ENDSEC\n0\nEOF\n",
+  ].join("");
+
+  triggerTextDownload(dxf, `${base}_laser.dxf`, "application/dxf");
+}
+
+// Export as LBRN2 (LightBurn native format)
+export function downloadLBRN2(
+  canvas: HTMLCanvasElement,
+  filename: string,
+  opts: { speed: number; power: number; dpi: number; passes: number; laserType: string }
+) {
+  const ctx = canvas.getContext("2d")!;
+  const { width: w, height: h } = canvas;
+  const { data } = ctx.getImageData(0, 0, w, h);
+  const base = filename.replace(/\.[^.]+$/, "");
+
+  // Convert canvas to base64 PNG for embedding
+  const pngDataUrl = canvas.toDataURL("image/png");
+  const b64 = pngDataUrl.replace("data:image/png;base64,", "");
+
+  const widthMM = (w / opts.dpi * 25.4).toFixed(4);
+  const heightMM = (h / opts.dpi * 25.4).toFixed(4);
+
+  const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<LightBurnProject AppVersion="1.7.00" FormatVersion="1" MaterialHeight="0" MirrorX="False" MirrorY="False">
+  <Thumbnail Source="${b64}" />
+  <VariableText>
+    <Start>0</Start>
+    <End>0</End>
+    <Current>0</Current>
+  </VariableText>
+  <UIPrefs />
+  <CutSetting type="Image">
+    <index Value="0" />
+    <name Value="Laser Engrave" />
+    <priority Value="0" />
+    <kerf Value="0" />
+    <minPower Value="${Math.round(opts.power * 0.8)}" />
+    <maxPower Value="${opts.power}" />
+    <minPower2 Value="${Math.round(opts.power * 0.8)}" />
+    <maxPower2 Value="${opts.power}" />
+    <speed Value="${opts.speed}" />
+    <numPasses Value="${opts.passes}" />
+    <zOffset Value="0" />
+    <perforate Value="False" />
+    <overscan Value="0" />
+    <doOutput Value="True" />
+    <show Value="True" />
+    <LinkSpeedToOutput Value="False" />
+    <laserType Value="${opts.laserType}" />
+    <ImageMode Value="Threshold" />
+    <DPI Value="${opts.dpi}" />
+    <negative Value="False" />
+    <bidir Value="True" />
+  </CutSetting>
+  <Shape type="Bitmap" CutIndex="0" W="${widthMM}" H="${heightMM}" Source="${b64}">
+    <XForm>1 0 0 1 0 0</XForm>
+  </Shape>
+</LightBurnProject>`;
+
+  triggerTextDownload(xml, `${base}_laser.lbrn2`, "application/xml");
+}
