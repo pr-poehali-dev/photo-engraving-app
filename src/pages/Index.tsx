@@ -3,6 +3,10 @@ import Icon from "@/components/ui/icon";
 
 type Tab = "upload" | "editor" | "preview" | "export" | "settings";
 
+type DitheringMode = "none" | "floyd" | "ordered" | "threshold" | "error";
+type LaserType = "CO2" | "Fiber" | "Diode" | "UV";
+type Material = "wood" | "leather" | "steel" | "plywood" | "glass" | "ceramic";
+
 interface LaserParams {
   contrast: number;
   brightness: number;
@@ -29,6 +33,22 @@ const DEFAULT_PARAMS: LaserParams = {
   passes: 1,
 };
 
+const MATERIAL_PRESETS: Record<Material, { label: string; emoji: string; speed: number; power: number; passes: number; dpi: number; desc: string }> = {
+  wood:     { label: "Дерево",     emoji: "🪵", speed: 3000, power: 70, passes: 1, dpi: 254, desc: "Сосна, дуб, берёза" },
+  leather:  { label: "Кожа",       emoji: "🟤", speed: 2500, power: 55, passes: 1, dpi: 254, desc: "Натуральная и искусственная" },
+  steel:    { label: "Нержавейка", emoji: "⚙️", speed: 500,  power: 100, passes: 3, dpi: 508, desc: "AISI 304, 316" },
+  plywood:  { label: "Фанера",     emoji: "📋", speed: 3500, power: 65, passes: 1, dpi: 254, desc: "Берёза, тополь" },
+  glass:    { label: "Стекло",     emoji: "🔷", speed: 1500, power: 45, passes: 2, dpi: 380, desc: "Силикатное, закалённое" },
+  ceramic:  { label: "Керамика",   emoji: "🏺", speed: 1000, power: 80, passes: 2, dpi: 380, desc: "Плитка, посуда" },
+};
+
+const LASER_TYPES: Record<LaserType, { label: string; wavelengths: string[]; desc: string }> = {
+  CO2:   { label: "CO₂",   wavelengths: ["10600 нм", "9300 нм"],       desc: "Органика, дерево, акрил" },
+  Fiber: { label: "Fiber", wavelengths: ["1064 нм", "1550 нм"],        desc: "Металлы, маркировка" },
+  Diode: { label: "Diode", wavelengths: ["450 нм", "808 нм", "980 нм"], desc: "Дерево, кожа, пластик" },
+  UV:    { label: "UV",    wavelengths: ["355 нм", "266 нм"],           desc: "Стекло, керамика, точность" },
+};
+
 export default function Index() {
   const [activeTab, setActiveTab] = useState<Tab>("upload");
   const [imageUrl, setImageUrl] = useState<string | null>(null);
@@ -36,6 +56,12 @@ export default function Index() {
   const [params, setParams] = useState<LaserParams>(DEFAULT_PARAMS);
   const [isDragging, setIsDragging] = useState(false);
   const [showComparison, setShowComparison] = useState(false);
+  const [dithering, setDithering] = useState<DitheringMode>("floyd");
+  const [bitDepth, setBitDepth] = useState<1 | 8>(1);
+  const [customDpi, setCustomDpi] = useState<number>(params.dpi);
+  const [laserType, setLaserType] = useState<LaserType>("CO2");
+  const [wavelength, setWavelength] = useState<string>("10600 нм");
+  const [material, setMaterial] = useState<Material | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleFile = useCallback((file: File) => {
@@ -60,6 +86,18 @@ export default function Index() {
 
   const setParam = (key: keyof LaserParams, value: number) => {
     setParams((p) => ({ ...p, [key]: value }));
+  };
+
+  const applyMaterial = (mat: Material) => {
+    const p = MATERIAL_PRESETS[mat];
+    setMaterial(mat);
+    setParams(prev => ({ ...prev, speed: p.speed, power: p.power, passes: p.passes, dpi: p.dpi }));
+    setCustomDpi(p.dpi);
+  };
+
+  const handleLaserType = (lt: LaserType) => {
+    setLaserType(lt);
+    setWavelength(LASER_TYPES[lt].wavelengths[0]);
   };
 
   const getImageFilter = () => {
@@ -243,31 +281,116 @@ export default function Index() {
           <div className="animate-fade-in">
             <div className="mb-4 flex items-center justify-between">
               <h2 className="font-orbitron text-lg font-bold neon-cyan">РЕДАКТОР ПАРАМЕТРОВ</h2>
-              <button onClick={() => setParams(DEFAULT_PARAMS)} className="text-[10px] font-mono text-cyan-700 hover:text-cyan-400 border border-cyan-900/40 px-3 py-1 rounded transition-colors">
+              <button onClick={() => { setParams(DEFAULT_PARAMS); setMaterial(null); }} className="text-[10px] font-mono text-cyan-700 hover:text-cyan-400 border border-cyan-900/40 px-3 py-1 rounded transition-colors">
                 СБРОС
               </button>
             </div>
+
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
-              <div className="lg:col-span-2">
+              {/* Left: preview */}
+              <div className="lg:col-span-2 flex flex-col gap-4">
                 <div className="panel rounded-lg overflow-hidden neon-border">
                   <div className="px-4 py-2 border-b border-cyan-900/30 flex items-center gap-2">
                     <div className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse" />
                     <span className="text-[10px] font-mono text-cyan-600 tracking-widest">LIVE PREVIEW</span>
-                    <span className="ml-auto text-[9px] font-mono text-cyan-800">CONTRAST:{params.contrast} · GRAY:{params.grayscale}%</span>
+                    <span className="ml-auto text-[9px] font-mono text-cyan-800">
+                      {params.dpi} DPI · {bitDepth}-BIT · {dithering.toUpperCase()}
+                    </span>
                   </div>
-                  <div className="p-4 flex items-center justify-center min-h-72 bg-black/40">
+                  <div className="p-4 flex items-center justify-center min-h-64 bg-black/40">
                     <img
                       src={imageUrl}
                       alt="preview"
-                      className="max-w-full max-h-64 object-contain rounded"
-                      style={{ filter: getImageFilter() }}
+                      className="max-w-full max-h-56 object-contain rounded"
+                      style={{ filter: getImageFilter(), imageRendering: bitDepth === 1 ? "pixelated" : "auto" }}
                     />
+                  </div>
+                </div>
+
+                {/* MATERIAL SELECTION */}
+                <div className="panel rounded-lg p-4 neon-border">
+                  <div className="text-[10px] font-mono text-cyan-600 tracking-widest mb-3 flex items-center gap-2">
+                    <Icon name="Layers" size={10} className="text-cyan-500" />
+                    ТИП МАТЕРИАЛА
+                  </div>
+                  <div className="grid grid-cols-3 sm:grid-cols-6 gap-2">
+                    {(Object.entries(MATERIAL_PRESETS) as [Material, typeof MATERIAL_PRESETS[Material]][]).map(([key, mat]) => (
+                      <button
+                        key={key}
+                        onClick={() => applyMaterial(key)}
+                        className={`flex flex-col items-center gap-1.5 p-2.5 rounded border transition-all duration-200 group ${
+                          material === key
+                            ? "border-emerald-400 bg-emerald-950/30 shadow-[0_0_12px_rgba(0,255,136,0.2)]"
+                            : "border-cyan-900/30 bg-cyan-950/10 hover:border-cyan-600/50 hover:bg-cyan-950/20"
+                        }`}
+                      >
+                        <span className="text-lg leading-none">{mat.emoji}</span>
+                        <span className={`text-[9px] font-mono tracking-wide ${material === key ? "text-emerald-300" : "text-cyan-700 group-hover:text-cyan-400"}`}>
+                          {mat.label}
+                        </span>
+                        {material === key && (
+                          <span className="text-[8px] font-mono text-emerald-600">{mat.speed}мм/мин</span>
+                        )}
+                      </button>
+                    ))}
+                  </div>
+                  {material && (
+                    <div className="mt-3 px-3 py-2 rounded bg-emerald-950/20 border border-emerald-900/30 flex items-center gap-2">
+                      <Icon name="Info" size={10} className="text-emerald-600" />
+                      <span className="text-[10px] font-mono text-emerald-600">
+                        {MATERIAL_PRESETS[material].desc} · Пресет применён автоматически
+                      </span>
+                    </div>
+                  )}
+                </div>
+
+                {/* LASER TYPE + WAVELENGTH */}
+                <div className="panel rounded-lg p-4 neon-border">
+                  <div className="text-[10px] font-mono text-cyan-600 tracking-widest mb-3 flex items-center gap-2">
+                    <Icon name="Zap" size={10} className="text-cyan-500" />
+                    ТИП ЛАЗЕРА И ДЛИНА ВОЛНЫ
+                  </div>
+                  <div className="grid grid-cols-4 gap-2 mb-3">
+                    {(Object.entries(LASER_TYPES) as [LaserType, typeof LASER_TYPES[LaserType]][]).map(([key, lt]) => (
+                      <button
+                        key={key}
+                        onClick={() => handleLaserType(key)}
+                        className={`flex flex-col items-center py-2.5 px-1 rounded border transition-all duration-200 ${
+                          laserType === key
+                            ? "border-cyan-400 bg-cyan-950/40 shadow-[0_0_12px_rgba(0,245,212,0.2)]"
+                            : "border-cyan-900/30 hover:border-cyan-700/50 hover:bg-cyan-950/10"
+                        }`}
+                      >
+                        <span className={`font-orbitron text-xs font-bold mb-0.5 ${laserType === key ? "text-cyan-300" : "text-cyan-700"}`}>{lt.label}</span>
+                        <span className="text-[8px] font-mono text-cyan-800 text-center leading-tight">{lt.desc}</span>
+                      </button>
+                    ))}
+                  </div>
+                  <div>
+                    <div className="text-[9px] font-mono text-cyan-800 tracking-widest mb-2">ДЛИНА ВОЛНЫ</div>
+                    <div className="flex flex-wrap gap-2">
+                      {LASER_TYPES[laserType].wavelengths.map(wl => (
+                        <button
+                          key={wl}
+                          onClick={() => setWavelength(wl)}
+                          className={`px-3 py-1.5 text-xs font-mono rounded border transition-all ${
+                            wavelength === wl
+                              ? "border-cyan-400 text-cyan-300 bg-cyan-950/40"
+                              : "border-cyan-900/40 text-cyan-700 hover:border-cyan-700/50"
+                          }`}
+                        >
+                          {wl}
+                        </button>
+                      ))}
+                    </div>
                   </div>
                 </div>
               </div>
 
+              {/* Right: controls */}
               <div className="flex flex-col gap-4">
-                <div className="panel rounded-lg p-5 neon-border">
+                {/* Image processing */}
+                <div className="panel rounded-lg p-4 neon-border">
                   <div className="text-[10px] font-mono text-cyan-600 tracking-widest mb-4 flex items-center gap-2">
                     <Icon name="Contrast" size={10} className="text-cyan-500" />
                     ОБРАБОТКА ИЗОБРАЖЕНИЯ
@@ -279,6 +402,103 @@ export default function Index() {
                   <SliderControl label="Порог" paramKey="threshold" min={0} max={255} />
                   <SliderControl label="Гамма" paramKey="gamma" min={0.1} max={3.0} step={0.1} decimals={1} />
                 </div>
+
+                {/* BITMAP CONVERSION */}
+                <div className="panel rounded-lg p-4 neon-border">
+                  <div className="text-[10px] font-mono text-cyan-600 tracking-widest mb-3 flex items-center gap-2">
+                    <Icon name="Grid2x2" size={10} className="text-cyan-500" />
+                    БИТОВЫЙ ФОРМАТ
+                  </div>
+                  <div className="mb-3">
+                    <div className="text-[9px] font-mono text-cyan-800 tracking-widest mb-2">ГЛУБИНА ЦВЕТА</div>
+                    <div className="grid grid-cols-2 gap-2">
+                      {([1, 8] as const).map(d => (
+                        <button
+                          key={d}
+                          onClick={() => setBitDepth(d)}
+                          className={`py-2 text-xs font-mono rounded border transition-all ${
+                            bitDepth === d
+                              ? "border-cyan-400 text-cyan-300 bg-cyan-950/40"
+                              : "border-cyan-900/30 text-cyan-700 hover:border-cyan-700/50"
+                          }`}
+                        >
+                          {d}-bit {d === 1 ? "(B&W)" : "(Gray)"}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-[9px] font-mono text-cyan-800 tracking-widest mb-2">ДИЗЕРИНГ</div>
+                    <div className="flex flex-col gap-1.5">
+                      {([
+                        { id: "none",      label: "Нет",            desc: "Только порог" },
+                        { id: "floyd",     label: "Floyd-Steinberg", desc: "Лучший для фото" },
+                        { id: "ordered",   label: "Ordered (Bayer)", desc: "Регулярный паттерн" },
+                        { id: "threshold", label: "Threshold",       desc: "Жёсткий порог" },
+                        { id: "error",     label: "Error Diffusion", desc: "Мягкий переход" },
+                      ] as { id: DitheringMode; label: string; desc: string }[]).map(d => (
+                        <button
+                          key={d.id}
+                          onClick={() => setDithering(d.id)}
+                          className={`flex items-center justify-between px-3 py-1.5 rounded border text-left transition-all ${
+                            dithering === d.id
+                              ? "border-cyan-400 bg-cyan-950/40"
+                              : "border-cyan-900/20 hover:border-cyan-800/50 bg-transparent"
+                          }`}
+                        >
+                          <span className={`text-[10px] font-mono ${dithering === d.id ? "text-cyan-300" : "text-cyan-700"}`}>{d.label}</span>
+                          <span className="text-[8px] font-mono text-cyan-900">{d.desc}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
+                {/* DPI SETTINGS */}
+                <div className="panel rounded-lg p-4 neon-border">
+                  <div className="text-[10px] font-mono text-cyan-600 tracking-widest mb-3 flex items-center gap-2">
+                    <Icon name="ScanLine" size={10} className="text-cyan-500" />
+                    НАСТРОЙКА DPI
+                  </div>
+                  <div className="grid grid-cols-4 gap-1.5 mb-3">
+                    {[72, 127, 254, 508].map(d => (
+                      <button
+                        key={d}
+                        onClick={() => { setParam("dpi", d); setCustomDpi(d); }}
+                        className={`py-1.5 text-[10px] font-mono rounded border transition-all ${
+                          params.dpi === d
+                            ? "border-cyan-400 text-cyan-300 bg-cyan-950/40"
+                            : "border-cyan-900/30 text-cyan-700 hover:border-cyan-700/50"
+                        }`}
+                      >
+                        {d}
+                      </button>
+                    ))}
+                  </div>
+                  <div>
+                    <div className="text-[9px] font-mono text-cyan-800 mb-1.5">ПРОИЗВОЛЬНОЕ ЗНАЧЕНИЕ</div>
+                    <div className="flex gap-2">
+                      <input
+                        type="number"
+                        min={10}
+                        max={2400}
+                        value={customDpi}
+                        onChange={e => setCustomDpi(Number(e.target.value))}
+                        className="flex-1 bg-black/40 border border-cyan-900/40 rounded px-3 py-1.5 text-sm font-mono text-cyan-300 outline-none focus:border-cyan-500/60 w-0"
+                      />
+                      <button
+                        onClick={() => setParam("dpi", customDpi)}
+                        className="neon-btn px-3 py-1.5 rounded text-[10px] font-orbitron tracking-widest"
+                      >
+                        OK
+                      </button>
+                    </div>
+                    <div className="mt-2 text-[9px] font-mono text-cyan-800">
+                      Шаг линии: {(25.4 / params.dpi).toFixed(3)} мм · Точек: {params.dpi} /дюйм
+                    </div>
+                  </div>
+                </div>
+
                 <button onClick={() => setActiveTab("preview")} className="neon-btn px-4 py-3 rounded-lg w-full font-orbitron text-xs tracking-widest">
                   <Icon name="Eye" size={14} className="inline mr-2" />
                   ПРЕДПРОСМОТР ГРАВИРОВКИ
@@ -449,9 +669,20 @@ export default function Index() {
                 <div className="mb-4">
                   <label className="text-[10px] font-mono text-cyan-700 tracking-widest block mb-2">ТИП ЛАЗЕРА</label>
                   <div className="grid grid-cols-2 gap-2">
-                    {["CO₂", "Fiber", "Diode", "UV"].map((type, i) => (
-                      <button key={type} className={`py-2 text-xs font-mono rounded border transition-all ${i === 0 ? "border-cyan-400 text-cyan-300 bg-cyan-950/30" : "border-cyan-900/30 text-cyan-700 hover:border-cyan-700/50"}`}>
-                        {type}
+                    {(Object.entries(LASER_TYPES) as [LaserType, typeof LASER_TYPES[LaserType]][]).map(([key, lt]) => (
+                      <button key={key} onClick={() => handleLaserType(key)} className={`py-2 px-2 text-xs font-mono rounded border transition-all text-left ${laserType === key ? "border-cyan-400 text-cyan-300 bg-cyan-950/30" : "border-cyan-900/30 text-cyan-700 hover:border-cyan-700/50"}`}>
+                        <div>{lt.label}</div>
+                        <div className="text-[8px] text-cyan-800 mt-0.5">{lt.desc}</div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div className="mb-4">
+                  <label className="text-[10px] font-mono text-cyan-700 tracking-widest block mb-2">ДЛИНА ВОЛНЫ</label>
+                  <div className="flex flex-wrap gap-2">
+                    {LASER_TYPES[laserType].wavelengths.map(wl => (
+                      <button key={wl} onClick={() => setWavelength(wl)} className={`px-3 py-1.5 text-[10px] font-mono rounded border transition-all ${wavelength === wl ? "border-cyan-400 text-cyan-300 bg-cyan-950/30" : "border-cyan-900/30 text-cyan-700 hover:border-cyan-700/50"}`}>
+                        {wl}
                       </button>
                     ))}
                   </div>
@@ -467,16 +698,6 @@ export default function Index() {
                       <div className="text-[9px] font-mono text-cyan-800 mb-1">ВЫСОТА</div>
                       <input type="number" defaultValue={400} className="w-full bg-black/40 border border-cyan-900/40 rounded px-3 py-2 text-sm font-mono text-cyan-300 outline-none focus:border-cyan-500/60" />
                     </div>
-                  </div>
-                </div>
-                <div>
-                  <label className="text-[10px] font-mono text-cyan-700 tracking-widest block mb-2">ДЛИНА ВОЛНЫ</label>
-                  <div className="grid grid-cols-3 gap-1.5">
-                    {["10600 нм", "1064 нм", "450 нм"].map((wl, i) => (
-                      <button key={wl} className={`py-1.5 text-[10px] font-mono rounded border transition-all ${i === 0 ? "border-cyan-400 text-cyan-300 bg-cyan-950/30" : "border-cyan-900/30 text-cyan-700 hover:border-cyan-700/50"}`}>
-                        {wl}
-                      </button>
-                    ))}
                   </div>
                 </div>
               </div>
@@ -558,11 +779,10 @@ export default function Index() {
           {imageUrl && <span>|  {imageName}</span>}
         </div>
         <div className="flex items-center gap-4 text-[9px] font-mono text-cyan-800">
-          <span>CONTRAST: {params.contrast}</span>
-          <span>SHARPNESS: {params.sharpness}</span>
-          <span>GRAY: {params.grayscale}%</span>
-          <span>|</span>
-          <span>{params.power}% PWR · {params.speed} MM/MIN</span>
+          <span>{laserType} · {wavelength}</span>
+          {material && <span>| {MATERIAL_PRESETS[material].label}</span>}
+          <span>| {params.dpi} DPI · {bitDepth}bit · {dithering}</span>
+          <span>| {params.power}% PWR · {params.speed} MM/MIN</span>
         </div>
       </footer>
       <div className="h-8" />
